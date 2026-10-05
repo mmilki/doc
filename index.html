@@ -120,11 +120,12 @@ function compress(file,max=1280,q=0.72){
 }
 
 // ===== State =====
-let D=[],CFG={},cur=null,curTgl="",P=[],Q=Promise.resolve(),target=null,GR=[],lastAct=Date.now(),holdRender=false;
+let LIST=[],DAYS={},cur=null,curTgl="",P=[],Q=Promise.resolve(),target=null,GR=[],lastAct=Date.now(),holdRender=false;
+const NAMA_SPPG="SPPG POLRES OGAN ILIR 4 SUNGAI PINANG LAGATI";
 const setSt=m=>{$("st").textContent=m};
 const normD=d=>{d.dok=d.dok||[];d.items=d.items||[];d.ops=d.ops||[];d.dok.forEach(k=>k.fotos=k.fotos||[]);return d};
 const hydrate=d=>d.dok.forEach(k=>k.fotos.forEach(f=>{if(f.fid)f.dataURL=thumb(f.fid)}));
-const dayNow=()=>D.find(x=>x.tgl===curTgl);
+const dayNow=()=>DAYS[curTgl];
 const todayStr=()=>{const t=new Date();return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0")};
 
 // ===== Login =====
@@ -177,35 +178,46 @@ $("btnOut").onclick=()=>{if(P.some(p=>p.st!=="ok")&&!confirm("Masih ada foto yan
 ["pointerdown","keydown","touchstart"].forEach(n=>document.addEventListener(n,()=>lastAct=Date.now(),{passive:true,capture:true}));
 setInterval(()=>{if(session&&Date.now()-lastAct>IDLE_MS&&!P.length)logout("Keluar otomatis karena tidak digunakan 1 jam.")},30000);
 
-// ===== Muat data =====
-async function loadAll(){
-  setSt("Memuat dari server…");
+// ===== Muat data (ringan: daftar hari dulu, lalu hanya 1 hari yang dipilih) =====
+async function loadList(){
+  setSt("Memuat daftar hari…");
   try{
-    const j=await callGet({action:"load"},90000);
-    D=(j.days||[]).filter(d=>d&&d.id&&d.tgl).map(normD).sort((a,b)=>b.tgl.localeCompare(a.tgl));
-    D.forEach(hydrate);CFG=j.cfg||{};
-    if(!curTgl){const td=todayStr();curTgl=D.find(x=>x.tgl===td)?td:(D[0]?D[0].tgl:td)}
-    setSt("✅ Tersambung");render();
+    const j=await callGet({action:"dokList"},90000);
+    LIST=(j.days||[]).filter(x=>x&&x.id&&x.tgl).sort((a,b)=>a.tgl.localeCompare(b.tgl));
+    if(!curTgl){const td=todayStr();curTgl=LIST.find(x=>x.tgl===td)?td:(LIST.length?LIST[LIST.length-1].tgl:td)}
+    await loadDay(curTgl);
+  }catch(e){
+    if(e.auth){logout(e.message||"Sesi berakhir, silakan login lagi.");return}
+    setSt("⚠ "+e.message);$("view").innerHTML='<div class="empty">Gagal memuat. Tekan ↻ untuk mencoba lagi.</div>';
+  }
+}
+async function loadDay(tgl){
+  const it=LIST.find(x=>x.tgl===tgl);
+  if(!it){render();return}
+  setSt("Memuat "+tgl+"…");render();
+  try{
+    const j=await callGet({action:"dokGet",id:it.id},90000);
+    const d=normD(j.day);hydrate(d);DAYS[tgl]=d;setSt("✅ Tersambung");render();
   }catch(e){
     if(e.auth){logout(e.message||"Sesi berakhir, silakan login lagi.");return}
     setSt("⚠ "+e.message);
   }
 }
-function enter(){$("login").hidden=true;$("app").hidden=false;loadAll()}
-$("btnRef").onclick=loadAll;
-$("dateIn").onchange=e=>{if(e.target.value){curTgl=e.target.value;render()}};
+function enter(){$("login").hidden=true;$("app").hidden=false;loadList()}
+$("btnRef").onclick=()=>{DAYS={};loadList()};
+$("dateIn").onchange=e=>{if(e.target.value){curTgl=e.target.value;if(LIST.find(x=>x.tgl===curTgl)&&!DAYS[curTgl])loadDay(curTgl);else render()}};
 const stepDay=dir=>{
-  const L=D.map(x=>x.tgl).sort();            // naik
+  const L=LIST.map(x=>x.tgl);
   const n=dir<0?[...L].reverse().find(t=>t<curTgl):L.find(t=>t>curTgl);
-  if(n){curTgl=n;render()}else setSt(dir<0?"Tidak ada hari sebelumnya":"Tidak ada hari berikutnya");
+  if(n){curTgl=n;if(!DAYS[n])loadDay(n);else render()}else setSt(dir<0?"Tidak ada hari sebelumnya":"Tidak ada hari berikutnya");
 };
 $("dPrev").onclick=()=>stepDay(-1);$("dNext").onclick=()=>stepDay(1);
 
 // ===== Tampilan =====
 function groups(d){
   const g={"Bahan Pangan":[],"Operasional":[]},seen=new Set();
-  const add=(j,n)=>{if(!String(n||"").trim())return;const k=j+"|"+n;if(seen.has(k))return;seen.add(k);g[j].push(n)};
-  d.items.forEach(x=>add("Bahan Pangan",x.n));d.ops.forEach(x=>add("Operasional",x.n));
+  const add=(j,n)=>{n=String(n||"").trim();if(!n)return;const k=j+"|"+n;if(seen.has(k))return;seen.add(k);g[j].push(n)};
+  d.items.forEach(n=>add("Bahan Pangan",n));d.ops.forEach(n=>add("Operasional",n));
   d.dok.forEach(k=>add(k.itemJenis==="Operasional"?"Operasional":"Bahan Pangan",k.itemRef));
   return g;
 }
@@ -213,14 +225,17 @@ function render(){
   if(holdRender)return;
   $("dateIn").value=curTgl;
   const d=dayNow(),v=$("view");
-  if(!d){v.innerHTML='<div class="empty">Tidak ada RAB pada tanggal '+esc(curTgl)+'.<br>Pilih tanggal lain (◀ ▶), atau minta RAB tanggal ini dibuat dulu di aplikasi utama.</div>';return}
+  if(!d){
+    const ada=LIST.find(x=>x.tgl===curTgl);
+    v.innerHTML=ada?'<div class="empty">Memuat…</div>':'<div class="empty">Tidak ada RAB pada tanggal '+esc(curTgl)+'.<br>Pilih tanggal lain (◀ ▶), atau minta RAB tanggal ini dibuat dulu di aplikasi utama.</div>';
+    return;
+  }
   cur=d.id;
   const g=groups(d);GR=[];
-  const hdr=`<div style="font-weight:700;margin:2px 0 0">${esc(tglPanjang(d))}</div>`;
   const npend=P.filter(p=>p.st==="up").length;
   if(npend)setSt("⏳ Mengunggah "+npend+" foto…");
-  let html=hdr;
-  JENIS.forEach(([jn,title],ji)=>{
+  let html=`<div style="font-weight:700;margin:2px 0 0">${esc(tglPanjang(d))}</div>`;
+  JENIS.forEach(([jn,title])=>{
     html+=`<div class="bab">${title}</div>`;
     if(!g[jn].length){html+='<div class="empty">Belum ada daftar di RAB hari ini.</div>';return}
     g[jn].forEach(ref=>{
@@ -239,28 +254,21 @@ function render(){
 document.addEventListener("focusin",e=>{if(e.target.classList&&e.target.classList.contains("ket"))holdRender=true});
 document.addEventListener("focusout",e=>{if(e.target.classList&&e.target.classList.contains("ket")){holdRender=false;setTimeout(render,50)}});
 
-// ===== Simpan ke server (selalu ambil data terbaru dulu, hanya ubah bagian dokumentasi) =====
-async function commit(dayId,fn){
-  const j=await callGet({action:"load"},90000);
-  const sd=(j.days||[]).find(x=>x.id===dayId);
-  if(!sd)throw new Error("Data hari tidak ditemukan di server");
-  normD(sd);
-  sd.dok.forEach(k=>k.fotos=k.fotos.filter(f=>f.fid).map(f=>({fid:f.fid,ket:f.ket||""})));
-  fn(sd.dok);
-  await call({action:"saveDay",day:sd},60000);
-  hydrate(sd);
-  const ix=D.findIndex(x=>x.id===dayId);if(ix>=0)D[ix]=sd;
+// ===== Simpan ke server (aksi ringan khusus dokumentasi: hanya 1 baris hari yang disentuh) =====
+function applyDok(dayId,dok){
+  const d=Object.values(DAYS).find(x=>x.id===dayId);if(!d)return;
+  d.dok=dok||[];d.dok.forEach(k=>k.fotos=k.fotos||[]);hydrate(d);
 }
 async function send(p){
   p.st="up";render();
   try{
-    const d=D.find(x=>x.id===p.dayId),i=p.dataURL.indexOf(","),mime=p.dataURL.slice(5,p.dataURL.indexOf(";"));
-    const r=await call({action:"uploadFoto",dayId:p.dayId,name:"foto_"+(d?d.tgl:"")+"_"+uid()+".jpg",mime,base64:p.dataURL.slice(i+1)},120000);
-    await commit(p.dayId,dok=>{
-      let k=dok.find(x=>x.itemRef===p.ref&&x.itemJenis===p.jenis);
-      if(!k){k={itemRef:p.ref,itemJenis:p.jenis,keterangan:"",fotos:[]};dok.push(k)}
-      k.fotos.push({fid:r.fid,ket:""});
-    });
+    const d=Object.values(DAYS).find(x=>x.id===p.dayId),i=p.dataURL.indexOf(","),mime=p.dataURL.slice(5,p.dataURL.indexOf(";"));
+    if(!p.fid){
+      const r=await call({action:"uploadFoto",dayId:p.dayId,name:"foto_"+(d?d.tgl:"")+"_"+uid()+".jpg",mime,base64:p.dataURL.slice(i+1)},120000);
+      p.fid=r.fid;                       // simpan agar tidak terunggah dua kali bila langkah berikutnya gagal
+    }
+    const j=await call({action:"dokAddFoto",dayId:p.dayId,itemRef:p.ref,itemJenis:p.jenis,fid:p.fid,ket:""},60000);
+    applyDok(p.dayId,j.dok);
     P=P.filter(x=>x!==p);setSt("✅ Tersimpan");
   }catch(e){
     if(e.auth){logout(e.message||"Sesi berakhir.");return}
@@ -293,7 +301,7 @@ document.addEventListener("click",e=>{
     if(!confirm("Hapus foto ini?"))return;
     const g=GR[+ds.g],dayId=cur,fid=ds.del;
     enqueue(async()=>{
-      try{await commit(dayId,dok=>{const k=dok.find(x=>x.itemRef===g.ref&&x.itemJenis===g.jenis);if(k)k.fotos=k.fotos.filter(f=>f.fid!==fid)});call({action:"deleteFoto",fid}).catch(()=>{});setSt("✅ Foto dihapus")}
+      try{const j=await call({action:"dokDelFoto",dayId,itemRef:g.ref,itemJenis:g.jenis,fid},60000);applyDok(dayId,j.dok);setSt("✅ Foto dihapus")}
       catch(er){if(er.auth){logout(er.message);return}alert("Gagal menghapus: "+er.message)}
       render();
     });
@@ -305,7 +313,7 @@ document.addEventListener("change",e=>{
   const t=e.target;if(!t.classList.contains("ket"))return;
   const g=GR[+t.dataset.g],fid=t.dataset.fid,val=t.value,dayId=cur;
   enqueue(async()=>{
-    try{await commit(dayId,dok=>{const k=dok.find(x=>x.itemRef===g.ref&&x.itemJenis===g.jenis);const f=k&&k.fotos.find(x=>x.fid===fid);if(f)f.ket=val});setSt("✅ Keterangan tersimpan")}
+    try{const j=await call({action:"dokSetKet",dayId,itemRef:g.ref,itemJenis:g.jenis,fid,ket:val},60000);applyDok(dayId,j.dok);setSt("✅ Keterangan tersimpan")}
     catch(er){if(er.auth){logout(er.message);return}setSt("⚠ "+er.message)}
   });
 });
@@ -315,7 +323,7 @@ $("lb").onclick=()=>$("lb").classList.remove("show");
 const ROMAWI=["I","II","III","IV"];
 function pdfDok(){
   const d=dayNow();if(!d)return;
-  const g=groups(d),tgl=esc(tglPanjang(d)),sppg=esc(CFG.sppg||"");
+  const g=groups(d),tgl=esc(tglPanjang(d)),sppg=esc(NAMA_SPPG);
   let pages="",bab=0;
   JENIS.forEach(([jn,title])=>{
     const all=[];
