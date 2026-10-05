@@ -22,7 +22,7 @@ label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
 details{margin-top:14px;text-align:left;font-size:13px;color:var(--mut)}details input{margin-top:4px}
 header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:10px 12px}
 .hrow{display:flex;gap:8px;align-items:center;max-width:900px;margin:0 auto}
-.hrow select{flex:1}
+.hrow button{padding:9px 11px}
 #st{max-width:900px;margin:4px auto 0;font-size:12px;color:var(--mut)}
 main{max-width:900px;margin:0 auto;padding:12px}
 .bab{margin:18px 0 8px;padding:10px 14px;background:var(--pri);color:var(--priInk);border-radius:10px;font-size:20px;font-weight:800;letter-spacing:.5px}
@@ -49,6 +49,7 @@ main{max-width:900px;margin:0 auto;padding:12px}
     <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••" maxlength="12">
     <button class="p" id="btnLogin" style="width:100%;margin-top:12px">Masuk</button>
     <div id="lmsg"></div>
+    <button id="btnTest" style="width:100%;margin-top:10px;font-size:13px">🔍 Tes koneksi server</button>
     <details><summary>Pengaturan</summary>
       <label style="margin-top:8px">Username akun dokumentasi</label><input id="usr" placeholder="dokumentasi">
       <div id="urlRow" hidden><label style="margin-top:8px">Alamat Server (Apps Script /exec)</label><input id="url" placeholder="https://script.google.com/macros/s/.../exec"></div>
@@ -59,7 +60,9 @@ main{max-width:900px;margin:0 auto;padding:12px}
 <div id="app" hidden>
   <header>
     <div class="hrow">
-      <select id="daySel"></select>
+      <button id="dPrev" title="Hari sebelumnya">◀</button>
+      <input type="date" id="dateIn" style="flex:1;min-width:0">
+      <button id="dNext" title="Hari berikutnya">▶</button>
       <button id="btnPdf" class="p" title="Unduh PDF">⬇ PDF</button>
       <button id="btnRef" title="Muat ulang">↻</button>
       <button id="btnOut" title="Keluar">⎋</button>
@@ -117,11 +120,12 @@ function compress(file,max=1280,q=0.72){
 }
 
 // ===== State =====
-let D=[],CFG={},cur=null,P=[],Q=Promise.resolve(),target=null,GR=[],lastAct=Date.now(),holdRender=false;
+let D=[],CFG={},cur=null,curTgl="",P=[],Q=Promise.resolve(),target=null,GR=[],lastAct=Date.now(),holdRender=false;
 const setSt=m=>{$("st").textContent=m};
 const normD=d=>{d.dok=d.dok||[];d.items=d.items||[];d.ops=d.ops||[];d.dok.forEach(k=>k.fotos=k.fotos||[]);return d};
 const hydrate=d=>d.dok.forEach(k=>k.fotos.forEach(f=>{if(f.fid)f.dataURL=thumb(f.fid)}));
-const dayNow=()=>D.find(x=>x.id===cur);
+const dayNow=()=>D.find(x=>x.tgl===curTgl);
+const todayStr=()=>{const t=new Date();return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0")};
 
 // ===== Login =====
 $("usr").value=localStorage.getItem("dok_user")||DEF_USER;
@@ -133,15 +137,35 @@ async function doLogin(){
   if(!/^https:\/\//.test(API_URL)&&$("url").value.trim())localStorage.setItem("rab_api_url",$("url").value.trim());
   if(!apiUrl()){msg.textContent="Alamat server belum diisi";return}
   msg.style.color="var(--mut)";msg.textContent="Memproses…";$("btnLogin").disabled=true;
+  const req=()=>http(apiUrl(),{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action:"login",username:usr,password:pin})},60000);
   try{
-    const r=await http(apiUrl(),{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action:"login",username:usr,password:pin})},30000);
+    let r;
+    try{r=await req()}catch(e){
+      if(/Timeout|Tidak ada koneksi/.test(e.message)){msg.textContent="Server sedang bangun, mencoba lagi…";r=await req()}else throw e;
+    }
     session={token:r.token,username:r.user.username,role:r.user.role};
     localStorage.setItem(SESS,JSON.stringify(session));localStorage.setItem("dok_user",usr);
     $("pin").value="";msg.textContent="";lastAct=Date.now();enter();
-  }catch(e){msg.style.color="var(--bad)";msg.textContent=e.message==="Terjadi kesalahan"?"PIN salah":e.message}
+  }catch(e){msg.style.color="var(--bad)";msg.textContent=e.message}
   finally{$("btnLogin").disabled=false}
 }
 $("btnLogin").onclick=doLogin;
+$("btnTest").onclick=async()=>{
+  const m=$("lmsg");m.style.color="var(--mut)";
+  if(!/^https:\/\//.test(API_URL)&&$("url").value.trim())localStorage.setItem("rab_api_url",$("url").value.trim());
+  if(!apiUrl()){m.style.color="var(--bad)";m.textContent="Alamat server belum diisi";return}
+  m.textContent="Menguji…";const t0=Date.now();
+  const ctrl=new AbortController(),tid=setTimeout(()=>ctrl.abort(),60000);
+  try{
+    const r=await fetch(apiUrl()+"?action=ping",{signal:ctrl.signal});const t=await r.text();
+    const dt=((Date.now()-t0)/1000).toFixed(1);let ok=true;try{JSON.parse(t)}catch(e){ok=false}
+    m.style.color=ok?"var(--ok)":"var(--warn)";
+    m.textContent=ok?"✅ Server menjawab ("+dt+" dtk). Silakan login.":"⚠ Server menjawab ("+dt+" dtk) tetapi bukan format yang benar. Cek deployment Apps Script.";
+  }catch(e){
+    m.style.color="var(--bad)";
+    m.textContent=e.name==="AbortError"?"❌ Tidak ada jawaban dalam 60 detik.":"❌ Tidak tersambung. Cek internet, dan pastikan deployment Apps Script diatur 'Siapa saja' (Anyone).";
+  }finally{clearTimeout(tid)}
+};
 $("pin").addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()});
 function logout(msg){
   if(session)call({action:"logout"},8000).catch(()=>{});
@@ -157,10 +181,10 @@ setInterval(()=>{if(session&&Date.now()-lastAct>IDLE_MS&&!P.length)logout("Kelua
 async function loadAll(){
   setSt("Memuat dari server…");
   try{
-    const j=await callGet({action:"load"},60000);
+    const j=await callGet({action:"load"},90000);
     D=(j.days||[]).filter(d=>d&&d.id&&d.tgl).map(normD).sort((a,b)=>b.tgl.localeCompare(a.tgl));
     D.forEach(hydrate);CFG=j.cfg||{};
-    if(!cur||!D.find(x=>x.id===cur))cur=D[0]&&D[0].id;
+    if(!curTgl){const td=todayStr();curTgl=D.find(x=>x.tgl===td)?td:(D[0]?D[0].tgl:td)}
     setSt("✅ Tersambung");render();
   }catch(e){
     if(e.auth){logout(e.message||"Sesi berakhir, silakan login lagi.");return}
@@ -169,7 +193,13 @@ async function loadAll(){
 }
 function enter(){$("login").hidden=true;$("app").hidden=false;loadAll()}
 $("btnRef").onclick=loadAll;
-$("daySel").onchange=e=>{cur=e.target.value;render()};
+$("dateIn").onchange=e=>{if(e.target.value){curTgl=e.target.value;render()}};
+const stepDay=dir=>{
+  const L=D.map(x=>x.tgl).sort();            // naik
+  const n=dir<0?[...L].reverse().find(t=>t<curTgl):L.find(t=>t>curTgl);
+  if(n){curTgl=n;render()}else setSt(dir<0?"Tidak ada hari sebelumnya":"Tidak ada hari berikutnya");
+};
+$("dPrev").onclick=()=>stepDay(-1);$("dNext").onclick=()=>stepDay(1);
 
 // ===== Tampilan =====
 function groups(d){
@@ -181,14 +211,15 @@ function groups(d){
 }
 function render(){
   if(holdRender)return;
-  const sel=$("daySel");
-  sel.innerHTML=D.map(d=>`<option value="${esc(d.id)}" ${d.id===cur?"selected":""}>${esc(tglPanjang(d))}</option>`).join("");
+  $("dateIn").value=curTgl;
   const d=dayNow(),v=$("view");
-  if(!d){v.innerHTML='<div class="empty">Belum ada data hari. Buat dulu di aplikasi utama.</div>';return}
+  if(!d){v.innerHTML='<div class="empty">Tidak ada RAB pada tanggal '+esc(curTgl)+'.<br>Pilih tanggal lain (◀ ▶), atau minta RAB tanggal ini dibuat dulu di aplikasi utama.</div>';return}
+  cur=d.id;
   const g=groups(d);GR=[];
+  const hdr=`<div style="font-weight:700;margin:2px 0 0">${esc(tglPanjang(d))}</div>`;
   const npend=P.filter(p=>p.st==="up").length;
   if(npend)setSt("⏳ Mengunggah "+npend+" foto…");
-  let html="";
+  let html=hdr;
   JENIS.forEach(([jn,title],ji)=>{
     html+=`<div class="bab">${title}</div>`;
     if(!g[jn].length){html+='<div class="empty">Belum ada daftar di RAB hari ini.</div>';return}
@@ -210,7 +241,7 @@ document.addEventListener("focusout",e=>{if(e.target.classList&&e.target.classLi
 
 // ===== Simpan ke server (selalu ambil data terbaru dulu, hanya ubah bagian dokumentasi) =====
 async function commit(dayId,fn){
-  const j=await callGet({action:"load"},60000);
+  const j=await callGet({action:"load"},90000);
   const sd=(j.days||[]).find(x=>x.id===dayId);
   if(!sd)throw new Error("Data hari tidak ditemukan di server");
   normD(sd);
